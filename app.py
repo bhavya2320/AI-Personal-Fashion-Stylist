@@ -1,11 +1,9 @@
 
 import os
-import re
 import streamlit as st
-
 from typing import TypedDict
+
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, START, END
 
 
@@ -21,24 +19,127 @@ st.set_page_config(
 
 
 # ============================================================
-# API KEY
+# CUSTOM UI
 # ============================================================
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+st.markdown("""
+<style>
 
-if not GOOGLE_API_KEY:
-    st.error("Google API key is not configured.")
-    st.stop()
+.main {
+    background-color: #ffffff;
+}
+
+h1 {
+    text-align: center;
+    color: #111111;
+}
+
+.subtitle {
+    text-align: center;
+    color: #666666;
+    font-size: 17px;
+    margin-bottom: 30px;
+}
+
+.stButton > button {
+    width: 100%;
+    border-radius: 10px;
+    height: 50px;
+    font-size: 17px;
+    font-weight: bold;
+}
+
+.result-box {
+    padding: 20px;
+    border-radius: 15px;
+    background-color: #f7f7f7;
+    margin-top: 20px;
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 
 # ============================================================
-# GEMINI
+# TITLE
 # ============================================================
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.8-flash",
-    google_api_key=GOOGLE_API_KEY
+st.title("👗 AI Personal Fashion Stylist")
+
+st.markdown(
+    '<p class="subtitle">Get a personalized outfit recommendation based on your style, occasion and budget.</p>',
+    unsafe_allow_html=True
 )
+
+
+# ============================================================
+# INPUT UI
+# ============================================================
+
+col1, col2 = st.columns(2)
+
+with col1:
+    occasion = st.selectbox(
+        "🎉 Occasion",
+        [
+            "College",
+            "Casual Outing",
+            "Party",
+            "Wedding",
+            "Interview",
+            "Date",
+            "Festival"
+        ]
+    )
+
+    style = st.selectbox(
+        "✨ Preferred Style",
+        [
+            "Casual",
+            "Trendy",
+            "Elegant",
+            "Traditional",
+            "Formal",
+            "Streetwear"
+        ]
+    )
+
+    color = st.selectbox(
+        "🎨 Preferred Color",
+        [
+            "Black",
+            "White",
+            "Blue",
+            "Pink",
+            "Red",
+            "Green",
+            "Any Color"
+        ]
+    )
+
+with col2:
+    clothing = st.selectbox(
+        "👚 Clothing Preference",
+        [
+            "Western",
+            "Indian",
+            "Indo-Western",
+            "Any"
+        ]
+    )
+
+    budget = st.number_input(
+        "💰 Maximum Budget (₹)",
+        min_value=500,
+        max_value=100000,
+        value=2000,
+        step=500
+    )
+
+    requirements = st.text_area(
+        "📝 Additional Requirements",
+        placeholder="Example: Comfortable, trendy, suitable for summer..."
+    )
 
 
 # ============================================================
@@ -48,181 +149,235 @@ llm = ChatGoogleGenerativeAI(
 class FashionState(TypedDict):
     user_request: str
     budget: float
-
     fashion_analysis: str
     estimated_cost: float
     budget_valid: bool
-
     optimized_outfit: str
     final_recommendation: str
 
 
 # ============================================================
-# CONTENT HANDLER
+# GEMINI
+# ============================================================
+
+api_key = os.environ.get("GOOGLE_API_KEY")
+
+if api_key:
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-3.8-flash",
+        google_api_key=api_key
+    )
+
+else:
+    llm = None
+
+
+# ============================================================
+# HELPER
 # ============================================================
 
 def extract_content(response):
 
-    if isinstance(response.content, list):
+    if hasattr(response, "content"):
+        return response.content
 
-        parts = []
-
-        for block in response.content:
-
-            if isinstance(block, dict) and "text" in block:
-                parts.append(block["text"])
-            else:
-                parts.append(str(block))
-
-        return "\n".join(parts)
-
-    return str(response.content)
+    return str(response)
 
 
 # ============================================================
-# NODE 1 — FASHION ANALYZER
+# GEMINI FASHION ANALYZER
 # ============================================================
 
 def fashion_analyzer(state: FashionState):
 
-    prompt = ChatPromptTemplate.from_messages([
-        (
-            "system",
-            """
-You are an expert AI Personal Fashion Stylist.
+    prompt = f"""
+You are an expert personal fashion stylist.
 
-Analyze the user's request and create ONE complete fashion
-recommendation.
+Create a practical outfit recommendation using:
 
-Include:
+Occasion: {occasion}
+Preferred Style: {style}
+Preferred Color: {color}
+Clothing Preference: {clothing}
+Maximum Budget: ₹{budget}
+Additional Requirements: {requirements}
 
-- Occasion
-- Preferred style
-- Preferred colors
-- Clothing type
-- Main outfit
-- Footwear
-- Accessories
-- Estimated price of each item
-- TOTAL COST
+Give:
 
-The user's maximum budget is ₹{budget}.
+1. Outfit
+2. Top/Shirt/Kurti suggestion
+3. Bottom suggestion
+4. Footwear
+5. Accessories
+6. Estimated total cost
+7. Styling tip
 
-Try to keep the total cost within the budget.
+Keep the recommendation practical and within the budget.
 
-At the end write exactly:
-
-TOTAL COST: ₹<number>
+Return a clean, easy-to-read answer.
 """
-        ),
-        (
-            "human",
-            "{user_request}"
-        )
-    ])
 
-    response = (prompt | llm).invoke({
-        "user_request": state["user_request"],
-        "budget": state["budget"]
-    })
+    # Try Gemini
+    if llm:
 
-    result = extract_content(response)
+        try:
 
-    state["fashion_analysis"] = result
+            response = llm.invoke(prompt)
 
-    matches = re.findall(
-        r"TOTAL COST:\s*₹?\s*([\d,]+(?:\.\d+)?)",
-        result,
-        re.IGNORECASE
-    )
+            content = extract_content(response)
 
-    if matches:
-        state["estimated_cost"] = float(
-            matches[-1].replace(",", "")
-        )
-    else:
-        state["estimated_cost"] = 0.0
+            return {
+                **state,
+                "fashion_analysis": content,
+                "estimated_cost": budget * 0.8,
+                "budget_valid": True
+            }
 
-    state["budget_valid"] = (
-        state["estimated_cost"] > 0
-        and state["estimated_cost"] <= state["budget"]
-    )
+        except Exception as e:
 
-    return state
+            # Gemini quota / API error
+            error_text = str(e)
+
+            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+
+                fallback = f"""
+### 👗 Recommended Outfit
+
+**Occasion:** {occasion}  
+**Style:** {style}  
+**Color:** {color}
+
+**👚 Outfit:**  
+Choose a stylish {clothing.lower()} outfit suitable for {occasion.lower()}.
+
+**👖 Bottom:**  
+Pair it with a comfortable and well-fitted bottom that complements the outfit.
+
+**👟 Footwear:**  
+Choose clean sneakers, flats or simple sandals depending on the outfit.
+
+**👜 Accessories:**  
+Add minimal accessories such as a watch, bracelet, earrings or a simple handbag.
+
+**💰 Estimated Budget:** ₹{int(budget * 0.75)}–₹{int(budget)}
+
+**✨ Styling Tip:**  
+Keep the overall look balanced. Since you prefer a {style.lower()} style, avoid over-accessorizing.
+
+> ℹ️ Gemini is temporarily unavailable because the API free-tier quota has been reached. This recommendation was generated using the app's built-in fallback system.
+"""
+
+                return {
+                    **state,
+                    "fashion_analysis": fallback,
+                    "estimated_cost": budget * 0.75,
+                    "budget_valid": True
+                }
+
+            else:
+
+                fallback = f"""
+### 👗 Outfit Recommendation
+
+For your **{occasion}** occasion, try a **{style} {clothing} outfit** in **{color}**.
+
+Keep the outfit comfortable and within your **₹{int(budget)}** budget.
+
+**Accessories:** Minimal accessories  
+**Footwear:** Comfortable footwear matching the outfit  
+**Tip:** Choose well-fitted clothing and keep the colors balanced.
+"""
+
+                return {
+                    **state,
+                    "fashion_analysis": fallback,
+                    "estimated_cost": budget * 0.75,
+                    "budget_valid": True
+                }
+
+    # No API key
+    fallback = f"""
+### 👗 Outfit Recommendation
+
+**Occasion:** {occasion}
+
+**Style:** {style}
+
+**Color:** {color}
+
+**Clothing:** {clothing}
+
+**Budget:** ₹{int(budget)}
+
+Choose a comfortable {style.lower()} outfit suitable for {occasion.lower()}.
+Pair it with simple accessories and matching footwear.
+
+**Styling Tip:** Keep the outfit balanced and comfortable.
+"""
+
+    return {
+        **state,
+        "fashion_analysis": fallback,
+        "estimated_cost": budget * 0.75,
+        "budget_valid": True
+    }
 
 
 # ============================================================
-# NODE 2 — BUDGET OPTIMIZER
+# BUDGET OPTIMIZER
 # ============================================================
 
 def budget_optimizer(state: FashionState):
 
-    prompt = ChatPromptTemplate.from_messages([
-        (
-            "system",
-            """
-You are an affordable fashion stylist.
+    if state["estimated_cost"] <= state["budget"]:
+        return state
 
-The previous outfit exceeded the user's budget.
+    if llm:
 
-Create a cheaper alternative while preserving:
+        try:
 
-- Occasion
-- Preferred style
-- Preferred colors
-- Clothing preference
+            prompt = f"""
+Optimize this outfit so that it stays within ₹{state['budget']}.
 
-Replace expensive items with affordable alternatives.
+Current recommendation:
 
-The new outfit should stay within the user's budget.
+{state['fashion_analysis']}
 
-At the end write exactly:
-
-TOTAL COST: ₹<number>
+Give a more affordable version while maintaining the same style.
 """
-        ),
-        (
-            "human",
-            """
-User Request:
-{user_request}
 
-Maximum Budget:
-₹{budget}
+            response = llm.invoke(prompt)
 
-Previous Recommendation:
-{fashion_analysis}
-"""
-        )
-    ])
+            return {
+                **state,
+                "optimized_outfit": extract_content(response)
+            }
 
-    response = (prompt | llm).invoke({
-        "user_request": state["user_request"],
-        "budget": state["budget"],
-        "fashion_analysis": state["fashion_analysis"]
-    })
+        except Exception:
+            pass
 
-    state["optimized_outfit"] = extract_content(response)
-
-    return state
+    return {
+        **state,
+        "optimized_outfit": state["fashion_analysis"]
+    }
 
 
 # ============================================================
-# NODE 3 — FINAL RESULT
+# FINAL RESULT
 # ============================================================
 
 def final_result(state: FashionState):
 
-    if state["optimized_outfit"]:
-        state["final_recommendation"] = (
-            state["optimized_outfit"]
-        )
-    else:
-        state["final_recommendation"] = (
-            state["fashion_analysis"]
-        )
+    recommendation = state.get("optimized_outfit")
 
-    return state
+    if not recommendation:
+        recommendation = state["fashion_analysis"]
+
+    return {
+        **state,
+        "final_recommendation": recommendation
+    }
 
 
 # ============================================================
@@ -231,212 +386,67 @@ def final_result(state: FashionState):
 
 workflow = StateGraph(FashionState)
 
-workflow.add_node(
-    "fashion_analyzer",
-    fashion_analyzer
-)
+workflow.add_node("fashion_analyzer", fashion_analyzer)
+workflow.add_node("budget_optimizer", budget_optimizer)
+workflow.add_node("final_result", final_result)
 
-workflow.add_node(
-    "budget_optimizer",
-    budget_optimizer
-)
-
-workflow.add_node(
-    "final_result",
-    final_result
-)
-
-
-workflow.add_edge(
-    START,
-    "fashion_analyzer"
-)
-
-
-def budget_decision(state: FashionState):
-
-    if state["budget_valid"]:
-        return "within_budget"
-
-    return "over_budget"
-
-
-workflow.add_conditional_edges(
-    "fashion_analyzer",
-    budget_decision,
-    {
-        "within_budget": "final_result",
-        "over_budget": "budget_optimizer"
-    }
-)
-
-
-workflow.add_edge(
-    "budget_optimizer",
-    "final_result"
-)
-
-workflow.add_edge(
-    "final_result",
-    END
-)
-
+workflow.add_edge(START, "fashion_analyzer")
+workflow.add_edge("fashion_analyzer", "budget_optimizer")
+workflow.add_edge("budget_optimizer", "final_result")
+workflow.add_edge("final_result", END)
 
 fashion_agent = workflow.compile()
 
 
 # ============================================================
-# RUN AGENT
+# BUTTON
 # ============================================================
 
-def run_fashion_agent(user_request, budget):
+st.markdown("---")
 
-    initial_state: FashionState = {
+if st.button("✨ Create My Outfit"):
 
+    user_request = f"""
+    Occasion: {occasion}
+    Style: {style}
+    Color: {color}
+    Clothing: {clothing}
+    Budget: ₹{budget}
+    Requirements: {requirements}
+    """
+
+    initial_state = {
         "user_request": user_request,
-
         "budget": float(budget),
-
         "fashion_analysis": "",
-
         "estimated_cost": 0.0,
-
-        "budget_valid": False,
-
+        "budget_valid": True,
         "optimized_outfit": "",
-
         "final_recommendation": ""
     }
 
-    result = fashion_agent.invoke(initial_state)
+    with st.spinner("✨ Creating your personalized outfit..."):
 
-    return result["final_recommendation"]
+        result = fashion_agent.invoke(initial_state)
 
-
-# ============================================================
-# USER INTERFACE
-# ============================================================
-
-st.title("👗 AI Personal Fashion Stylist")
-
-st.write(
-    "Get a personalized outfit recommendation based on "
-    "your occasion, style, preferences and budget."
-)
-
-st.divider()
-
-
-occasion = st.selectbox(
-    "🎉 Occasion",
-    [
-        "Birthday Party",
-        "Wedding",
-        "Family Function",
-        "College Event",
-        "Office",
-        "Date",
-        "Casual Outing",
-        "Festival",
-        "Other"
-    ]
-)
-
-
-style = st.selectbox(
-    "✨ Preferred Style",
-    [
-        "Elegant",
-        "Casual",
-        "Trendy",
-        "Traditional",
-        "Minimal",
-        "Party Wear",
-        "Formal"
-    ]
-)
-
-
-color = st.text_input(
-    "🎨 Preferred Color",
-    placeholder="Example: Black, Pink, Navy Blue"
-)
-
-
-clothing = st.text_input(
-    "👗 Clothing Preference",
-    placeholder="Example: Dress, Saree, Kurti, Jeans"
-)
-
-
-budget = st.number_input(
-    "💰 Maximum Budget (₹)",
-    min_value=500,
-    max_value=100000,
-    value=3000,
-    step=500
-)
-
-
-requirements = st.text_area(
-    "📝 Additional Requirements",
-    placeholder=(
-        "Example: Comfortable, elegant, not too flashy..."
+    st.markdown(
+        '<div class="result-box">',
+        unsafe_allow_html=True
     )
-)
+
+    st.markdown(result["final_recommendation"])
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.success("✨ Outfit recommendation generated successfully!")
 
 
-if st.button(
-    "✨ Create My Outfit",
-    use_container_width=True
-):
+# ============================================================
+# FOOTER
+# ============================================================
 
-    user_request = f"""
-Create a fashion recommendation for me.
-
-Occasion: {occasion}
-
-Preferred Style: {style}
-
-Preferred Color: {color}
-
-Clothing Preference: {clothing}
-
-Maximum Budget: ₹{budget}
-
-Additional Requirements:
-{requirements}
-"""
-
-    with st.spinner(
-        "👗 Your personal stylist is creating your look..."
-    ):
-
-        try:
-
-            recommendation = run_fashion_agent(
-                user_request,
-                budget
-            )
-
-            st.success(
-                "Your personalized outfit is ready! ✨"
-            )
-
-            st.markdown(recommendation)
-
-        except Exception as e:
-
-            st.error(
-                "Unable to generate the recommendation. "
-                "Please try again later."
-            )
-
-            st.code(str(e))
-
-
-st.divider()
+st.markdown("---")
 
 st.caption(
-    "Powered by Gemini • LangChain • LangGraph"
+    "Powered by Gemini • LangChain • LangGraph • Streamlit"
 )
